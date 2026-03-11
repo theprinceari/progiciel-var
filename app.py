@@ -1,4 +1,7 @@
 import streamlit as st
+import pandas as pd
+import numpy as np
+import yfinance as yf
 
 st.set_page_config(
     page_title="Progiciel VaR",
@@ -6,13 +9,11 @@ st.set_page_config(
     layout="wide"
 )
 
-# MENU LATERAL
 menu = st.sidebar.selectbox(
     "Navigation",
     ["Accueil", "Portefeuille", "VaR", "Backtesting", "Reporting"]
 )
 
-# PAGE ACCUEIL
 if menu == "Accueil":
 
     st.title("Progiciel de Calcul, Comparaison et Backtesting de la VaR")
@@ -25,7 +26,6 @@ if menu == "Accueil":
     """)
 
     st.subheader("Objectifs du progiciel")
-
     st.markdown("""
     - Sélectionner des actifs financiers
     - Construire un portefeuille
@@ -37,7 +37,6 @@ if menu == "Accueil":
     """)
 
     st.subheader("Équipe projet")
-
     st.markdown("""
     - Kopangoye Guénolé Wariol
     - Adjagba Harlem Désir
@@ -45,43 +44,78 @@ if menu == "Accueil":
     - Anta Mbaye
     """)
 
-# PAGE PORTEFEUILLE
 elif menu == "Portefeuille":
 
     st.title("Création du portefeuille")
 
-    st.write("Sélectionnez les actifs et leurs poids.")
+    actifs_disponibles = {
+        "Apple": "AAPL",
+        "Microsoft": "MSFT",
+        "Airbus": "AIR.PA",
+        "TotalEnergies": "TTE.PA",
+        "LVMH": "MC.PA",
+        "BNP Paribas": "BNP.PA",
+        "Safran": "SAF.PA"
+    }
 
-    actifs = st.multiselect(
+    actifs_choisis = st.multiselect(
         "Choisir les actifs",
-        ["Apple", "Microsoft", "Airbus", "Total", "LVMH"]
+        list(actifs_disponibles.keys())
     )
 
-    if actifs:
-        st.write("Actifs sélectionnés :", actifs)
+    date_debut = st.date_input("Date de début", value=pd.to_datetime("2023-01-01"))
+    date_fin = st.date_input("Date de fin", value=pd.to_datetime("today"))
 
-# PAGE VAR
+    if st.button("Télécharger les données"):
+        if not actifs_choisis:
+            st.warning("Veuillez sélectionner au moins un actif.")
+        else:
+            tickers = [actifs_disponibles[a] for a in actifs_choisis]
+
+            data = yf.download(
+                tickers,
+                start=date_debut,
+                end=date_fin,
+                auto_adjust=True,
+                progress=False
+            )
+
+            if data.empty:
+                st.error("Aucune donnée récupérée.")
+            else:
+                if "Close" in data:
+                    prix = data["Close"].copy()
+                else:
+                    prix = data.copy()
+
+                if isinstance(prix, pd.Series):
+                    prix = prix.to_frame()
+
+                st.subheader("Prix de clôture")
+                st.dataframe(prix.tail())
+
+                rendements = prix.pct_change().dropna()
+
+                st.subheader("Rendements journaliers")
+                st.dataframe(rendements.tail())
+
+                st.subheader("Statistiques descriptives")
+                stats = pd.DataFrame({
+                    "Rendement moyen": rendements.mean(),
+                    "Volatilité": rendements.std()
+                })
+                st.dataframe(stats)
+
+                st.line_chart(prix)
+
 elif menu == "VaR":
-
     st.title("Calcul de la Value at Risk")
+    st.write("Module VaR à venir.")
 
-    niveau = st.selectbox(
-        "Niveau de confiance",
-        [95, 99]
-    )
-
-    st.write("Calcul de la VaR au niveau", niveau, "%")
-
-# PAGE BACKTESTING
 elif menu == "Backtesting":
-
     st.title("Backtesting des modèles de VaR")
+    st.write("Module Backtesting à venir.")
 
-    st.write("Analyse des violations de la VaR.")
-
-# PAGE REPORTING
 elif menu == "Reporting":
-
     st.title("Reporting")
-
-    st.write("Génération du fichier Excel et du rapport PDF.")
+    st.write("Module Reporting à venir.")
