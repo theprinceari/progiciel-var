@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from scipy.stats import norm, t, skew, kurtosis
+from arch import arch_model
 
 st.set_page_config(
     page_title="Progiciel VaR",
@@ -58,6 +59,9 @@ def calculer_rendement_portefeuille(rendements, poids_vecteur):
     return rendements.dot(poids_vecteur)
 
 
+# =========================
+# VAR CLASSIQUES
+# =========================
 def var_historique(rp, alpha):
     return -np.quantile(rp, alpha)
 
@@ -81,17 +85,78 @@ def var_cornish_fisher(rp, alpha):
     mu = rp.mean()
     sigma = rp.std(ddof=1)
     s = skew(rp, bias=False)
-    k = kurtosis(rp, fisher=True, bias=False)  # excès de kurtosis
+    k = kurtosis(rp, fisher=True, bias=False)
     z = norm.ppf(alpha)
 
     z_cf = (
         z
-        + (1/6) * (z**2 - 1) * s
-        + (1/24) * (z**3 - 3*z) * k
-        - (1/36) * (2*z**3 - 5*z) * (s**2)
+        + (1 / 6) * (z**2 - 1) * s
+        + (1 / 24) * (z**3 - 3 * z) * k
+        - (1 / 36) * (2 * z**3 - 5 * z) * (s**2)
     )
 
     return -(mu + sigma * z_cf)
+
+
+# =========================
+# VAR RISKMETRICS / EWMA
+# =========================
+def ewma_volatilite(rp, lam=0.94):
+    rp = pd.Series(rp).dropna()
+    if len(rp) < 2:
+        return np.nan
+
+    sigma2 = rp.var(ddof=1)
+
+    for r in rp:
+        sigma2 = lam * sigma2 + (1 - lam) * (r ** 2)
+
+    return np.sqrt(sigma2)
+
+
+def var_riskmetrics(rp, alpha, lam=0.94):
+    sigma_ewma = ewma_volatilite(rp, lam=lam)
+    z = norm.ppf(alpha)
+    mu = 0.0
+    return -(mu + sigma_ewma * z), sigma_ewma
+
+
+# =========================
+# VAR GARCH
+# =========================
+def var_garch_normale(rp, alpha):
+    rp = pd.Series(rp).dropna()
+
+    if len(rp) < 50:
+        return np.nan, np.nan
+
+    # On travaille souvent en pourcentage pour la stabilité numérique
+    rp_pct = 100 * rp
+
+    model = arch_model(rp_pct, vol="Garch", p=1, q=1, mean="Constant", dist="normal")
+    res = model.fit(disp="off")
+
+    forecast = res.forecast(horizon=1, reindex=False)
+
+    mu_forecast = forecast.mean.iloc[-1, 0] / 100
+    var_forecast = forecast.variance.iloc[-1, 0] / (100 ** 2)
+    sigma_forecast = np.sqrt(var_forecast)
+
+    z = norm.ppf(alpha)
+    var_g = -(mu_forecast + sigma_forecast * z)
+
+    return var_g, sigma_forecast
+
+
+# =========================
+# PLACEHOLDERS EVT
+# =========================
+def var_evt_placeholder():
+    return np.nan
+
+
+def var_evt_garch_placeholder():
+    return np.nan
 
 
 # =========================
@@ -105,9 +170,6 @@ if "rendements" not in st.session_state:
 
 if "portefeuille" not in st.session_state:
     st.session_state["portefeuille"] = None
-
-if "tickers_selectionnes" not in st.session_state:
-    st.session_state["tickers_selectionnes"] = None
 
 
 # =========================
@@ -184,7 +246,7 @@ elif menu == "Portefeuille":
     actifs_choisis = st.multiselect(
         "Choisir les actifs",
         list(actifs_disponibles.keys()),
-        default=["Apple", "Microsoft", "Airbus", "LVMH"]
+        default=["Apple", "Microsoft", "Airbus"]
     )
 
     col1, col2 = st.columns(2)
@@ -206,7 +268,6 @@ elif menu == "Portefeuille":
 
             st.session_state["prix"] = prix
             st.session_state["rendements"] = rendements
-            st.session_state["tickers_selectionnes"] = list(rendements.columns)
 
     if st.session_state["prix"] is not None and st.session_state["rendements"] is not None:
         prix = st.session_state["prix"]
@@ -282,12 +343,12 @@ elif menu == "VaR":
         st.subheader("Rendements du portefeuille")
         st.dataframe(rp.to_frame(name="Rendement Portefeuille").tail(), use_container_width=True)
 
-        st.subheader("Paramètres statistiques")
         mu = rp.mean()
         sigma = rp.std(ddof=1)
         s = skew(rp, bias=False)
         k = kurtosis(rp, fisher=True, bias=False)
 
+        st.subheader("Paramètres statistiques du portefeuille")
         stats_portefeuille = pd.DataFrame({
             "Moyenne": [mu],
             "Volatilité": [sigma],
@@ -301,30 +362,58 @@ elif menu == "VaR":
         var_stud = var_student(rp, alpha, df=8)
         var_cf = var_cornish_fisher(rp, alpha)
 
+        var_rm, sigma_ewma = var_riskmetrics(rp, alpha, lam=0.94)
+        var_garch, sigma_garch = var_garch_normale(rp, alpha)
+
         resultats_var = pd.DataFrame({
             "Méthode": [
                 "Historique",
                 "Normale",
                 "Student (ddl=8)",
-                "Cornish-Fisher"
+                "Cornish-Fisher",
+                "RiskMetrics (EWMA)",
+                "GARCH(1,1) normale",
+                "EVT",
+                "EVT-GARCH"
             ],
             f"VaR {niveau}%": [
                 var_hist,
                 var_norm,
                 var_stud,
-                var_cf
+                var_cf,
+                var_rm,
+                var_garch,
+                var_evt_placeholder(),
+                var_evt_garch_placeholder()
             ]
         })
 
         st.subheader("Résultats des VaR")
         st.dataframe(resultats_var, use_container_width=True)
 
+        st.subheader("Volatilités conditionnelles")
+        volatilites = pd.DataFrame({
+            "Mesure": ["Volatilité historique", "Volatilité EWMA", "Volatilité GARCH"],
+            "Valeur": [sigma, sigma_ewma, sigma_garch]
+        })
+        st.dataframe(volatilites, use_container_width=True)
+
         st.info(
-            "Interprétation : une VaR journalière de 0.035 signifie qu’avec "
-            f"{niveau}% de confiance, la perte journalière ne devrait pas dépasser 3.5%."
+            "EVT et EVT-GARCH sont laissées en placeholder pour l’instant. "
+            "On peut les ajouter ensuite proprement."
         )
 
 # =========================
 # PAGE BACKTESTING
-#
+# =========================
+elif menu == "Backtesting":
+    st.title("Backtesting des modèles de VaR")
+    st.write("Module à venir.")
+
+# =========================
+# PAGE REPORTING
+# =========================
+elif menu == "Reporting":
+    st.title("Reporting")
+    st.write("Module à venir.")
 
